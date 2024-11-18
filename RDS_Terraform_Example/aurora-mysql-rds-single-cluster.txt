@@ -1,0 +1,165 @@
+#====================== COMMON DB SUBNET GROUP ==============================================================================================
+#============================================================================================================================================
+resource "aws_db_subnet_group" "aurora-mysql-db-subnet" {
+  name       = join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-subnet"])
+  subnet_ids = ["${var.db-subnet-aza}", "${var.db-subnet-azb}", "${var.db-subnet-azc}"]
+  tags = merge( { Name = join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-subnet"]) }, 
+    var.additional_tags )
+}
+#============================================================================================================================================
+module "hbl-aws-aps1-appname-nonpcidss-prod-aurora-mysql-cluster" {
+  source = "https://github.com/cloudposse/terraform-aws-rds-cluster"
+
+  name            = join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-cluster"])
+  engine          = "aurora-mysql"
+  engine_version  = "8.0"
+  master_username = "root"
+  instances = {
+    1 = {
+      instance_class      = "db.r5.large"
+      identifier     = join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-01"])
+    }
+    2 = {
+      identifier     = join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-02"])
+      instance_class = "db.r5.large"
+    }
+    3 = {
+      identifier     = join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-03"])
+      instance_class = "db.r5.large"
+      promotion_tier = 15
+    }
+  }
+  
+  # autoscalling configuration for read replicas
+  autoscaling_enabled      = true
+  autoscaling_min_capacity = 1
+  autoscaling_max_capacity = 5
+  
+  vpc_id               = var.nonpcidss-prod-vpc
+  create_security_group = false
+  vpc_security_group_ids = ["${var.postgresql-sg}", "${var.nonpcidss-CommonInfraRule-sg}"]
+  db_subnet_group_name   = aws_db_subnet_group.aurora-mysql-db-subnet.name
+
+  # Backup 
+  backup_retention_period     = 7
+  create_cloudwatch_log_group = false
+  copy_tags_to_snapshot       = true
+  skip_final_snapshot         = true
+  
+  # Public & Version Update
+  publicly_accessible         = false
+  allow_major_version_upgrade = false
+  auto_minor_version_upgrade  = true
+  apply_immediately           = true
+  ca_cert_identifier          = "rds-ca-rsa2048-g1"
+
+  create_db_cluster_parameter_group      = true
+  db_cluster_parameter_group_name        = join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-parameter-cluster-group"])
+  db_cluster_parameter_group_family      = "aurora-mysql8.0"
+  db_cluster_parameter_group_description = "cluster parameter group"
+  db_cluster_parameter_group_parameters = [
+    {
+      name         = "connect_timeout"
+      value        = 120
+      apply_method = "immediate"
+      }, {
+      name         = "innodb_lock_wait_timeout"
+      value        = 300
+      apply_method = "immediate"
+      }, {
+      name         = "log_output"
+      value        = "FILE"
+      apply_method = "immediate"
+      }, {
+      name         = "max_allowed_packet"
+      value        = "67108864"
+      apply_method = "immediate"
+      }, {
+      name         = "aurora_parallel_query"
+      value        = "OFF"
+      #apply_method = "pending-reboot"
+      apply_method = "immediate"
+      }, {
+      name         = "binlog_format"
+      value        = "ROW"
+      #apply_method = "pending-reboot"
+      apply_method = "immediate"
+      }, {
+      name         = "log_bin_trust_function_creators"
+      value        = 1
+      apply_method = "immediate"
+      }, {
+      name         = "require_secure_transport"
+      value        = "ON"
+      apply_method = "immediate"
+      }, {
+      name         = "tls_version"
+      value        = "TLSv1.2"
+      #apply_method = "pending-reboot"
+      apply_method = "immediate"
+    }
+  ]
+
+
+  create_db_parameter_group      = true
+  db_parameter_group_name        = join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-parameter-group"])
+  db_parameter_group_family      = "aurora-mysql8.0"
+  db_parameter_group_description = "DB parameter group"
+  db_parameter_group_parameters = [
+    {
+      name         = "connect_timeout"
+      value        = 60
+      apply_method = "immediate"
+      }, {
+      name         = "general_log"
+      value        = 0
+      apply_method = "immediate"
+      }, {
+      name         = "innodb_lock_wait_timeout"
+      value        = 300
+      apply_method = "immediate"
+      }, {
+      name         = "log_output"
+      value        = "FILE"
+      #apply_method = "pending-reboot"
+      apply_method = "immediate"
+      }, {
+      name         = "long_query_time"
+      value        = 5
+      apply_method = "immediate"
+      }, {
+      name         = "max_connections"
+      value        = 2000
+      apply_method = "immediate"
+      }, {
+      name         = "slow_query_log"
+      value        = 1
+      apply_method = "immediate"
+      }, {
+      name         = "log_bin_trust_function_creators"
+      value        = 1
+      apply_method = "immediate"
+    }
+  ]
+
+    
+  enabled_cloudwatch_logs_exports = ["audit", "error", "general", "slowquery"]
+
+  # Database Activity Streams provide a near real-time stream for monitoring and audit
+  #create_db_cluster_activity_stream     = true
+  #db_cluster_activity_stream_kms_key_id = var.kms_key_id
+
+  # Secret Manager
+  manage_master_user_password_rotation              = true
+  master_user_password_rotation_schedule_expression = "rate(90 days)"
+
+  # https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/DBActivityStreams.Overview.html#DBActivityStreams.Overview.sync-mode
+  db_cluster_activity_stream_mode = "async"
+
+  tags = merge(
+    {
+      Name = "${join("-", [local.org, local.csp, local.region, local.account, local.vpcname, local.env, "aurora-mysql-db-cluster"])}"
+    }, var.additional_tags
+  )
+  
+}
